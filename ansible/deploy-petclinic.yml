@@ -1,0 +1,57 @@
+---
+- name: Deploy Spring PetClinic
+  hosts: petclinic_targets
+  gather_facts: false
+
+  vars:
+    app_dir: /opt/petclinic
+    app_jar: "{{ app_dir }}/spring-petclinic.jar"
+    java_bin: /opt/java/openjdk/bin/java
+
+  tasks:
+    - name: Ensure app directory exists
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: appuser
+        group: appuser
+        mode: "0755"
+
+    - name: Copy packaged PetClinic jar
+      ansible.builtin.copy:
+        src: "{{ petclinic_jar }}"
+        dest: "{{ app_jar }}"
+        owner: appuser
+        group: appuser
+        mode: "0644"
+
+    - name: Stop any running PetClinic app
+      ansible.builtin.shell: "pkill -f '[s]pring-petclinic.jar'"
+      register: stop_petclinic
+      failed_when: stop_petclinic.rc not in [0, 1]
+      changed_when: stop_petclinic.rc == 0
+
+    - name: Start PetClinic app
+      ansible.builtin.shell: |
+        nohup {{ java_bin }} -jar {{ app_jar }} --server.port=8080 > {{ app_dir }}/petclinic.log 2>&1 &
+      args:
+        executable: /bin/bash
+
+    - name: Wait for PetClinic to listen
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 8080
+        timeout: 120
+      register: petclinic_port
+      ignore_errors: true
+
+    - name: Show PetClinic startup log when startup fails
+      ansible.builtin.shell: "tail -n 120 {{ app_dir }}/petclinic.log"
+      register: petclinic_log
+      changed_when: false
+      when: petclinic_port is failed
+
+    - name: Fail if PetClinic did not start
+      ansible.builtin.fail:
+        msg: "{{ petclinic_log.stdout }}"
+      when: petclinic_port is failed
